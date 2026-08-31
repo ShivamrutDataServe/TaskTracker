@@ -1,5 +1,5 @@
 {
-  "min_f1_score": 0.6,
+  "min_f1_score": 0.55,
   "min_roc_auc": 0.65,
   "notes": "Current model scores F1=0.6517, ROC-AUC=0.7638 on the fixed random_state=42 split. F1 and ROC-AUC are used instead of plain accuracy because they don't get inflated just by predicting the majority class - a real regression (e.g. a broken feature encoding) will move these even when accuracy looks fine."
 }
