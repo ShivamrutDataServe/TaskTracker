@@ -1,0 +1,95 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Fast, cheap checks first - fail here before spending time training.
+  # ---------------------------------------------------------------------
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+
+  dependency-scan:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - run: pip install -r requirements-dev.txt
+      # --strict also fails on packages pip-audit can't find advisory data
+      # for, rather than silently skipping them.
+      - run: pip-audit -r requirements.txt --strict
+
+  # ---------------------------------------------------------------------
+  # Train the model here, in CI - never inside `docker build`. The
+  # resulting model.pkl/metrics.json are uploaded as a build artifact so
+  # the CD workflow can reuse this *exact* trained model rather than
+  # retraining (and potentially getting a different result).
+  # ---------------------------------------------------------------------
+  train-and-evaluate:
+    name: Train Model & Quality Gate
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - run: pip install -r requirements.txt
+
+      - name: Train model
+        run: python train_model.py
+
+      - name: Enforce quality gate against baseline_metrics.json
+        run: |
+          pip install -r requirements-dev.txt >/dev/null
+          python check_quality_gate.py
+
+      - name: Upload trained model artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trained-model
+          path: |
+            model.pkl
+            metrics.json
+          retention-days: 14
+
+  # ---------------------------------------------------------------------
+  # Real tests: API behavior + model regression checks, using the exact
+  # artifact produced above (not a freshly retrained one).
+  # ---------------------------------------------------------------------
+  test:
+    name: Test Suite
+    needs: train-and-evaluate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - uses: actions/download-artifact@v4
+        with:
+          name: trained-model
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: pytest -v

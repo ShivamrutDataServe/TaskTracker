@@ -1,0 +1,17 @@
+.git
+.github
+tests
+data
+scripts
+train_model.py
+check_quality_gate.py
+requirements-dev.txt
+README.md
+SETUP-COMMANDS.txt
+metrics/baseline_metrics.json
+.pytest_cache
+.ruff_cache
+__pycache__
+*.pyc
+.env
+.venv

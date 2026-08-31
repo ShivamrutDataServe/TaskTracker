@@ -1,0 +1,149 @@
+====================================================================
+ SETUP COMMANDS — churn-prediction (advanced CI/CD)
+ Everything below runs once to wire the repo up. After that, every
+ push to main triggers the entire pipeline automatically on GitHub.
+====================================================================
+
+
+------------------------------------------------------
+STEP 0 — One-time tools you need installed locally
+------------------------------------------------------
+- git
+- GitHub CLI ("gh")   -> https://cli.github.com
+- Python 3.11+ (only needed to run tests locally, not for the pipeline)
+- (Docker is NOT required locally - the pipeline builds in the cloud)
+
+    git --version
+    gh --version
+    gh auth login
+
+
+------------------------------------------------------
+STEP 1 — Get a Docker Hub access token (manual, browser)
+------------------------------------------------------
+1. Go to: https://hub.docker.com/settings/security
+2. Click "New Access Token", name it e.g. "github-actions"
+3. Copy the token somewhere safe - you'll paste it in Step 5.
+
+
+------------------------------------------------------
+STEP 2 — Unzip the project and move into it
+------------------------------------------------------
+
+    unzip churn-prediction-advanced.zip -d churn-prediction-advanced
+    cd churn-prediction-advanced
+
+
+------------------------------------------------------
+STEP 3 — (Optional but recommended) Verify it locally first
+------------------------------------------------------
+
+    pip install -r requirements.txt -r requirements-dev.txt
+    python train_model.py
+    python check_quality_gate.py
+    pytest -v
+    ruff check .
+    pip-audit -r requirements.txt --strict
+
+All of the above should pass before you ever push - it's the exact
+sequence CI will run for you anyway.
+
+Try the API locally too:
+
+    uvicorn app:app --reload &
+    curl -X POST http://localhost:8000/predict/ \
+      -H "Content-Type: application/json" \
+      -d '{"tenure_months":2,"monthly_charges":95,"total_charges":190,"contract_type":0,"support_calls":6,"is_senior_citizen":1,"has_tech_support":0}'
+    kill %1
+
+
+------------------------------------------------------
+STEP 4 — Initialize git and create the GitHub repo
+------------------------------------------------------
+
+    git init
+    git add .
+    git commit -m "chore: initial commit"
+    gh repo create churn-prediction-advanced --public --source=. --remote=origin --push
+
+  (Use --private instead of --public if you want a private repo.)
+
+
+------------------------------------------------------
+STEP 5 — Add the required secrets
+------------------------------------------------------
+
+    gh secret set DOCKERHUB_USERNAME --body "<your-dockerhub-username>"
+    gh secret set DOCKERHUB_TOKEN --body "<the-access-token-from-step-1>"
+    gh secret list
+
+
+------------------------------------------------------
+STEP 6 — Create the "production" Environment with required reviewers
+------------------------------------------------------
+This step has to be done in the browser - it's what makes the final
+promotion step pause for manual approval.
+
+    1. Open: https://github.com/<your-username>/churn-prediction-advanced/settings/environments
+    2. Click "New environment", name it exactly:  production
+    3. Check "Required reviewers" and add yourself (or your team)
+    4. Save protection rules
+
+
+------------------------------------------------------
+STEP 7 — (Optional) Protect the main branch
+------------------------------------------------------
+Browser: repo -> Settings -> Branches -> Add rule
+  - Branch name pattern: main
+  - Require status checks to pass before merging
+      -> select: lint, dependency-scan, train-and-evaluate, test
+
+
+------------------------------------------------------
+STEP 8 — Watch the first pipeline run
+------------------------------------------------------
+Your push in Step 4 already triggered ci.yml. Watch it:
+
+    gh run watch
+
+Once CI finishes successfully, cd.yml starts automatically:
+
+    gh run list --workflow=cd.yml
+
+
+------------------------------------------------------
+STEP 9 — Approve the production promotion
+------------------------------------------------------
+The "promote-to-production" job will sit and wait for approval.
+
+    Browser -> repo -> Actions -> (the running CD Pipeline run)
+             -> "Review deployments" -> select "production" -> Approve
+
+Or via CLI once you know the run id (from `gh run list`):
+
+    gh run view <run-id>
+
+
+------------------------------------------------------
+STEP 10 — Verify the images
+------------------------------------------------------
+
+    docker pull <username>/churn-prediction:latest
+    docker pull <username>/churn-prediction:v1.0.<run_number>
+    docker run --rm -p 8000:8000 <username>/churn-prediction:latest
+    curl http://localhost:8000/health
+
+
+------------------------------------------------------
+DAY-TO-DAY USE (this is all you ever type going forward)
+------------------------------------------------------
+
+    git add .
+    git commit -m "fix: correct contract_type validation range"
+    git push origin main
+
+Then just approve the production promotion in the GitHub UI when it's
+ready. Everything else - training, the quality gate, tests, linting,
+dependency scanning, building, image scanning, and tagging - happens
+automatically on GitHub's servers.
+====================================================================

@@ -1,0 +1,133 @@
+name: CD Pipeline
+
+# Deliberately NOT triggered on push - this only ever runs after the CI
+# Pipeline workflow finishes, and only proceeds if that run succeeded.
+# A red CI run (failed tests, failed lint, failed quality gate, failed
+# dependency scan) can never reach Docker Hub.
+on:
+  workflow_run:
+    workflows: ["CI Pipeline"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Build once, scan BEFORE anything is pushed anywhere. If Trivy finds a
+  # CRITICAL/HIGH vulnerability, this job fails and nothing is published -
+  # not even the "candidate" tag.
+  # ---------------------------------------------------------------------
+  build-and-scan:
+    name: Build & Scan Image
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.tag }}
+      short_sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - name: Checkout the exact commit CI tested
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Download the CI-trained model
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-model
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute version tag
+        id: version
+        run: |
+          VERSION=$(cat VERSION)
+          SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
+          echo "tag=${VERSION}.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (load locally, do not push yet)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: churn-prediction:scan-candidate
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan image with Trivy before it goes anywhere
+        # Pinned to the full commit SHA for aquasecurity/trivy-action v0.35.0,
+        # NOT a version tag. On 2026-03-19, attackers force-pushed 76 of 77
+        # trivy-action tags (including the old 0.24.0 this workflow used) to
+        # malicious commits that stole CI/CD secrets before running the real
+        # scan (CVE-2026-33634, GHSA-69fq-xp46-6x23). v0.35.0 was the one tag
+        # unaffected, because it was already covered by GitHub's immutable
+        # releases feature. Tags can still be deleted/renamed (as 0.24.0 was
+        # during remediation) - a commit SHA cannot. Do not change this back
+        # to a bare version tag.
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          image-ref: churn-prediction:scan-candidate
+          format: table
+          severity: CRITICAL,HIGH
+          # Explicit path rather than relying on default auto-detection -
+          # see .trivyignore for exactly what's exempted and why. Only
+          # these two named CVE/GHSA IDs are affected; anything else
+          # still fails the build below.
+          trivyignores: .trivyignore
+          # Fail on fixable HIGH/CRITICAL findings, but don't block forever
+          # on CVEs with no vendor patch available yet - there's nothing
+          # actionable to do about those until upstream ships a fix.
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Log in to Docker Hub
+        if: success()
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Tag and push (only reachable if the scan above passed)
+        run: |
+          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/churn-prediction"
+          docker tag churn-prediction:scan-candidate "$IMAGE:v${{ steps.version.outputs.tag }}"
+          docker tag churn-prediction:scan-candidate "$IMAGE:candidate-${{ steps.version.outputs.sha }}"
+          docker push "$IMAGE:v${{ steps.version.outputs.tag }}"
+          docker push "$IMAGE:candidate-${{ steps.version.outputs.sha }}"
+
+  # ---------------------------------------------------------------------
+  # Promotion to "latest"/production requires a human to click Approve in
+  # the GitHub UI (configured via the "production" Environment's required
+  # reviewers). No rebuild happens here - the exact digest that was
+  # already scanned and pushed above is re-tagged, so what a reviewer
+  # approves is bit-for-bit what goes live.
+  # ---------------------------------------------------------------------
+  promote-to-production:
+    name: Promote to Production (manual approval)
+    needs: build-and-scan
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Re-tag the already-scanned image as latest (no rebuild)
+        run: |
+          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/churn-prediction"
+          SRC="$IMAGE:v${{ needs.build-and-scan.outputs.version }}"
+          docker buildx imagetools create --tag "$IMAGE:latest" "$SRC"
+          echo "Promoted $SRC -> $IMAGE:latest"

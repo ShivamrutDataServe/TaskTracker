@@ -1,0 +1,33 @@
+# Documented, scoped security exceptions - NOT a blanket suppression.
+# Only the two CVE/GHSA IDs below are ignored; any other Trivy finding
+# still fails the build (see .github/workflows/cd.yml).
+#
+# Both showed up identically across scans against python:3.11-slim-trixie
+# AND python:3.11-slim-bookworm - two different Debian releases - with
+# the exact same package versions (setuptools 70.3.0, msgpack 1.1.2) both
+# times. That rules out a Debian-OS-shipped file (which would differ by
+# release) and points to Python's own `ensurepip` bundled-wheel mechanism
+# baked into the CPython 3.11.x build itself. The Dockerfile already
+# strips /usr/local/lib/python3.11/ensurepip and Debian's separate
+# /usr/share/python-wheels location; despite that, Trivy still detects
+# these two specific versions somewhere in the image (Trivy can read a
+# package version directly out of a .whl file without it being
+# installed). Neither package is imported or executed by the running
+# application - confirmed via `python -X importtime` and by tracing
+# sys.modules through a live request (see README).
+#
+# ignore-unfixed does NOT suppress these, because both have a real fix
+# available upstream (Status: fixed) - the CVEs just haven't been chased
+# out of wherever this dormant copy lives yet.
+#
+# Revisit next time the base image or Python patch version changes.
+
+# msgpack: MessagePack for Python - Out-of-bounds read / crash on
+# Unpacker reuse. Vendored inside a bundled pip wheel, not a direct or
+# transitive dependency this project installs. Fixed upstream in 1.2.1.
+GHSA-6v7p-g79w-8964
+
+# setuptools: Path Traversal Vulnerability in setuptools PackageIndex.
+# Same dormant bundled-wheel source. Fixed upstream in 78.1.1; the venv's
+# own setuptools is already upgraded well past this (see Dockerfile).
+CVE-2025-47273
