@@ -1,0 +1,11 @@
+{
+  "accuracy": 0.69,
+  "precision": 0.6905,
+  "recall": 0.617,
+  "f1_score": 0.6517,
+  "roc_auc": 0.7638,
+  "trained_at": "2026-09-06T11:06:44.497775+00:00",
+  "git_sha": "local",
+  "rows_trained_on": 1500,
+  "rows_tested_on": 500
+}

@@ -110,6 +110,253 @@ Only re-run `python scripts/generate_dataset.py` if you deliberately want
 a new synthetic dataset — it is not part of the pipeline and overwrites
 `data/churn.csv`.
 
+## Run locally with Docker Compose
+
+Docker Compose runs the application and a PostgreSQL 16 instance together on
+an isolated network. The application is published on port `8000`.
+
+### Prerequisites
+
+Install the following tools and make sure they are available on your `PATH`:
+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) with the
+  Docker Engine and Docker Compose v2 enabled
+- Git, to clone this repository
+
+The Docker image does not train the model. `Dockerfile` expects `model.pkl` and
+`metrics.json` to exist in the build context, so generate them once before the
+first Compose build. If you are also setting up the Python development
+environment, follow the [Local development](#local-development) section above.
+
+### Build and start the stack
+
+From the repository root:
+
+```bash
+python train_model.py
+python check_quality_gate.py
+docker compose up --build -d
+```
+
+The Compose stack contains:
+
+| Service | Image | Purpose | Internal port |
+|---|---|---|---|
+| `app` | Built from `Dockerfile` | FastAPI model-serving API | `8000` |
+| `db` | `postgres:16-alpine` | PostgreSQL database | `5432` |
+
+Compose waits for PostgreSQL's health check before starting the application.
+The database data is persisted in the named `pgdata` volume. The default local
+credentials are `taskuser` / `taskpass` for the `tasktracker` database; do not
+reuse these values in a shared or production environment.
+
+### Verify the running containers
+
+```bash
+docker compose ps
+docker compose logs -f app
+```
+
+In another terminal, check the application and call the JSON API:
+
+```bash
+curl http://localhost:8000/health
+
+curl -X POST http://localhost:8000/predict/ \
+  -H "Content-Type: application/json" \
+  -d '{"tenure_months":12,"monthly_charges":70,"total_charges":840,"contract_type":0,"support_calls":2,"is_senior_citizen":0,"has_tech_support":0}'
+```
+
+Open <http://localhost:8000/> for the HTML form. `/version` reports the
+application version and the metrics for the model packaged in the image.
+
+Stop the containers while retaining the database volume:
+
+```bash
+docker compose down
+```
+
+To remove the containers and the local PostgreSQL data volume as well:
+
+```bash
+docker compose down -v
+```
+
+> **Current application note:** PostgreSQL is included in Compose so the full
+> application stack can be exercised locally and matches the Kubernetes
+> topology. The current FastAPI implementation serves the trained model and
+> does not yet read or write `DATABASE_URL`; the database container is not used
+> by the prediction endpoints until persistence is implemented in the app.
+
+## Deploy to Kubernetes
+
+The [`k8s/`](k8s/) directory contains manifests for the application,
+PostgreSQL, configuration, Secrets, Services, and an optional NGINX Ingress.
+The manifests use the `default` namespace and create these main resources:
+
+- `tasktracker-app` Deployment with two application replicas
+- `tasktracker-app-service` ClusterIP Service on port `80` forwarding to the
+  container's port `8000`
+- `postgres-db` StatefulSet with one PostgreSQL replica and a `1Gi` persistent
+  volume claim
+- `db-service` ClusterIP Service on port `5432`
+- `tasktracker-ingress` for the host `tasktracker.internal.example.com`
+
+### Prerequisites
+
+You need:
+
+- Access to a Kubernetes cluster and a configured `kubectl` context
+- A container registry if deploying to a remote cluster
+- An NGINX Ingress Controller only if you intend to use `ingress.yaml`
+- A storage class that can provision the StatefulSet's `1Gi` PVC
+
+Check the selected cluster before applying anything:
+
+```bash
+kubectl config current-context
+kubectl cluster-info
+kubectl get nodes
+```
+
+### Build the image
+
+The Kubernetes Deployment currently references `tasktracker:latest` with
+`imagePullPolicy: IfNotPresent`.
+
+For Docker Desktop Kubernetes, build the image in the Docker environment used
+by the cluster:
+
+```bash
+python train_model.py
+python check_quality_gate.py
+docker build -t tasktracker:latest .
+```
+
+For a remote cluster, tag and push the image to a registry that the cluster
+can access, then update `k8s/app-deployment.yaml` so
+`spec.template.spec.containers[0].image` uses that fully qualified image. For
+example:
+
+```bash
+docker build -t REGISTRY.example.com/TEAM/churn-prediction:VERSION .
+docker push REGISTRY.example.com/TEAM/churn-prediction:VERSION
+kubectl -n default set image deployment/tasktracker-app \
+  app=REGISTRY.example.com/TEAM/churn-prediction:VERSION
+```
+
+Use an immutable version tag rather than `latest` for shared environments.
+The registry credentials, if required, must be configured as a Kubernetes
+`imagePullSecret` and referenced by the Deployment; the supplied manifests do
+not create one.
+
+### Apply the manifests
+
+Review and replace the example Secret values before applying them. The checked-in
+secrets are base64-encoded demonstration values, not encryption. For a real
+cluster, create Secrets through your organization's secret-management process
+and do not commit production credentials.
+
+Apply the database resources first, followed by the application resources:
+
+```bash
+kubectl apply -f k8s/db-secret.yaml
+kubectl apply -f k8s/db-configmap.yaml
+kubectl apply -f k8s/db-service.yaml
+kubectl apply -f k8s/db-statefulset.yaml
+
+kubectl apply -f k8s/app-secret.yaml
+kubectl apply -f k8s/app-configmap.yaml
+kubectl apply -f k8s/app-service.yaml
+kubectl apply -f k8s/app-deployment.yaml
+```
+
+The database and application manifests have health probes, but applying them
+in this order makes the dependency relationship easier to inspect. The app's
+`DATABASE_URL` points to `db-service:5432` inside the cluster.
+
+### Verify the deployment
+
+Wait for the database and application to become ready:
+
+```bash
+kubectl get pods -w
+kubectl get statefulset postgres-db
+kubectl get deployment tasktracker-app
+kubectl get pvc
+kubectl rollout status statefulset/postgres-db
+kubectl rollout status deployment/tasktracker-app
+```
+
+Inspect service endpoints and application logs if a pod is not ready:
+
+```bash
+kubectl get services
+kubectl get endpoints db-service tasktracker-app-service
+kubectl logs deployment/tasktracker-app
+kubectl describe pod -l app=tasktracker-app
+```
+
+For a cluster without an externally exposed load balancer, use port forwarding
+to verify the API from your workstation:
+
+```bash
+kubectl port-forward service/tasktracker-app-service 8000:80
+```
+
+Then, in another terminal:
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/version
+curl -X POST http://localhost:8000/predict/ \
+  -H "Content-Type: application/json" \
+  -d '{"tenure_months":12,"monthly_charges":70,"total_charges":840,"contract_type":0,"support_calls":2,"is_senior_citizen":0,"has_tech_support":0}'
+```
+
+To use the supplied Ingress, install/configure an NGINX Ingress Controller,
+apply the manifest, and make `tasktracker.internal.example.com` resolve to the
+Ingress controller's address (for example, with a DNS record or a local
+`hosts` entry):
+
+```bash
+kubectl apply -f k8s/ingress.yaml
+kubectl get ingress tasktracker-ingress
+```
+
+The Ingress manifest routes `/` to `tasktracker-app-service` and assumes the
+NGINX ingress class. If your cluster uses another controller or hostname,
+update `k8s/ingress.yaml` before applying it.
+
+### Update and remove the deployment
+
+After building and publishing a new image, update the Deployment and watch the
+rolling update:
+
+```bash
+kubectl -n default set image deployment/tasktracker-app \
+  app=REGISTRY.example.com/TEAM/churn-prediction:NEW_VERSION
+kubectl rollout status deployment/tasktracker-app
+```
+
+Remove the application and database resources when the environment is no
+longer needed:
+
+```bash
+kubectl delete -f k8s/ingress.yaml --ignore-not-found
+kubectl delete -f k8s/app-deployment.yaml -f k8s/app-service.yaml \
+  -f k8s/app-configmap.yaml -f k8s/app-secret.yaml
+kubectl delete -f k8s/db-statefulset.yaml -f k8s/db-service.yaml \
+  -f k8s/db-configmap.yaml -f k8s/db-secret.yaml
+```
+
+Deleting the StatefulSet does not necessarily delete its persistent volume
+claim. Delete the claim explicitly only when its data is no longer needed:
+
+```bash
+kubectl delete pvc postgres-data-postgres-db
+```
+
 ## Endpoints
 
 | Method | Path | Purpose |
