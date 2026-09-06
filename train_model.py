@@ -1,5 +1,5 @@
 """
-Trains the churn-prediction classifier and writes two artifacts:
+Trains the TaskTracker churn-prediction classifier and writes two artifacts:
   - model.pkl     the fitted scikit-learn RandomForestClassifier
   - metrics.json  evaluation metrics + provenance, consumed by:
                      * check_quality_gate.py (CI quality gate)

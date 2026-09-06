@@ -1,4 +1,4 @@
-# Customer Churn Prediction — Advanced CI/CD Pipeline
+# TaskTracker — Advanced CI/CD Pipeline
 
 A FastAPI service that predicts whether a customer will churn using a
 scikit-learn `RandomForestClassifier`, trained on tenure, billing, and
@@ -239,10 +239,10 @@ can access, then update `k8s/app-deployment.yaml` so
 example:
 
 ```bash
-docker build -t REGISTRY.example.com/TEAM/churn-prediction:VERSION .
-docker push REGISTRY.example.com/TEAM/churn-prediction:VERSION
+docker build -t REGISTRY.example.com/TEAM/tasktracker:VERSION .
+docker push REGISTRY.example.com/TEAM/tasktracker:VERSION
 kubectl -n default set image deployment/tasktracker-app \
-  app=REGISTRY.example.com/TEAM/churn-prediction:VERSION
+  app=REGISTRY.example.com/TEAM/tasktracker:VERSION
 ```
 
 Use an immutable version tag rather than `latest` for shared environments.
@@ -335,7 +335,7 @@ rolling update:
 
 ```bash
 kubectl -n default set image deployment/tasktracker-app \
-  app=REGISTRY.example.com/TEAM/churn-prediction:NEW_VERSION
+  app=REGISTRY.example.com/TEAM/tasktracker:NEW_VERSION
 kubectl rollout status deployment/tasktracker-app
 ```
 

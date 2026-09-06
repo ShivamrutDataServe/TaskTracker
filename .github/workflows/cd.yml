@@ -60,7 +60,7 @@ jobs:
           context: .
           push: false
           load: true
-          tags: churn-prediction:scan-candidate
+          tags: tasktracker:scan-candidate
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -76,7 +76,7 @@ jobs:
         # to a bare version tag.
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
-          image-ref: churn-prediction:scan-candidate
+          image-ref: tasktracker:scan-candidate
           format: table
           severity: CRITICAL,HIGH
           # Explicit path rather than relying on default auto-detection -
@@ -99,9 +99,9 @@ jobs:
 
       - name: Tag and push (only reachable if the scan above passed)
         run: |
-          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/churn-prediction"
-          docker tag churn-prediction:scan-candidate "$IMAGE:v${{ steps.version.outputs.tag }}"
-          docker tag churn-prediction:scan-candidate "$IMAGE:candidate-${{ steps.version.outputs.sha }}"
+          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/tasktracker"
+          docker tag tasktracker:scan-candidate "$IMAGE:v${{ steps.version.outputs.tag }}"
+          docker tag tasktracker:scan-candidate "$IMAGE:candidate-${{ steps.version.outputs.sha }}"
           docker push "$IMAGE:v${{ steps.version.outputs.tag }}"
           docker push "$IMAGE:candidate-${{ steps.version.outputs.sha }}"
 
@@ -127,7 +127,7 @@ jobs:
 
       - name: Re-tag the already-scanned image as latest (no rebuild)
         run: |
-          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/churn-prediction"
+          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/tasktracker"
           SRC="$IMAGE:v${{ needs.build-and-scan.outputs.version }}"
           docker buildx imagetools create --tag "$IMAGE:latest" "$SRC"
           echo "Promoted $SRC -> $IMAGE:latest"

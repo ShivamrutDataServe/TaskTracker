@@ -1,149 +1,208 @@
 ====================================================================
- SETUP COMMANDS — churn-prediction (advanced CI/CD)
- Everything below runs once to wire the repo up. After that, every
- push to main triggers the entire pipeline automatically on GitHub.
+ TASKTRACKER COMMANDS — current project
 ====================================================================
 
+This file matches the current TaskTracker repository, which contains a
+FastAPI churn-prediction service, model-training scripts, Docker Compose,
+Kubernetes manifests, and GitHub Actions CI/CD workflows.
 
-------------------------------------------------------
-STEP 0 — One-time tools you need installed locally
-------------------------------------------------------
-- git
-- GitHub CLI ("gh")   -> https://cli.github.com
-- Python 3.11+ (only needed to run tests locally, not for the pipeline)
-- (Docker is NOT required locally - the pipeline builds in the cloud)
+The model/API still uses churn-prediction feature and response names because
+that is the implemented business functionality. TaskTracker is the project,
+application, container, and deployment name.
+
+--------------------------------------------------------------------
+1. Required tools
+--------------------------------------------------------------------
+
+- Git
+- Python 3.11+
+- Docker Desktop with Docker Compose
+- kubectl and a Kubernetes cluster for Kubernetes deployment
+- GitHub CLI (gh), optional for repository and Actions administration
 
     git --version
+    python --version
+    docker --version
+    docker compose version
+    kubectl version --client
     gh --version
-    gh auth login
 
+--------------------------------------------------------------------
+2. Install Python dependencies
+--------------------------------------------------------------------
 
-------------------------------------------------------
-STEP 1 — Get a Docker Hub access token (manual, browser)
-------------------------------------------------------
-1. Go to: https://hub.docker.com/settings/security
-2. Click "New Access Token", name it e.g. "github-actions"
-3. Copy the token somewhere safe - you'll paste it in Step 5.
+    python -m venv .venv
 
+Windows PowerShell:
 
-------------------------------------------------------
-STEP 2 — Unzip the project and move into it
-------------------------------------------------------
+    .\.venv\Scripts\Activate.ps1
 
-    unzip churn-prediction-advanced.zip -d churn-prediction-advanced
-    cd churn-prediction-advanced
+macOS/Linux:
 
+    source .venv/bin/activate
 
-------------------------------------------------------
-STEP 3 — (Optional but recommended) Verify it locally first
-------------------------------------------------------
-
+    python -m pip install --upgrade pip
     pip install -r requirements.txt -r requirements-dev.txt
+
+--------------------------------------------------------------------
+3. Train and validate the model locally
+--------------------------------------------------------------------
+
     python train_model.py
     python check_quality_gate.py
     pytest -v
     ruff check .
     pip-audit -r requirements.txt --strict
 
-All of the above should pass before you ever push - it's the exact
-sequence CI will run for you anyway.
+Training creates model.pkl and refreshes metrics.json. These generated files
+are required by the API and Docker image but are not source-code files.
 
-Try the API locally too:
+--------------------------------------------------------------------
+4. Run the FastAPI service locally
+--------------------------------------------------------------------
 
-    uvicorn app:app --reload &
-    curl -X POST http://localhost:8000/predict/ \
-      -H "Content-Type: application/json" \
-      -d '{"tenure_months":2,"monthly_charges":95,"total_charges":190,"contract_type":0,"support_calls":6,"is_senior_citizen":1,"has_tech_support":0}'
-    kill %1
+    python train_model.py
+    uvicorn app:app --reload
 
+In another terminal:
 
-------------------------------------------------------
-STEP 4 — Initialize git and create the GitHub repo
-------------------------------------------------------
+    curl http://localhost:8000/health
+    curl http://localhost:8000/version
+    curl -X POST http://localhost:8000/predict/ -H "Content-Type: application/json" -d '{"tenure_months":12,"monthly_charges":70,"total_charges":840,"contract_type":0,"support_calls":2,"is_senior_citizen":0,"has_tech_support":0}'
 
-    git init
-    git add .
-    git commit -m "chore: initial commit"
-    gh repo create churn-prediction-advanced --public --source=. --remote=origin --push
+Open http://localhost:8000/ for the TaskTracker web form.
 
-  (Use --private instead of --public if you want a private repo.)
+--------------------------------------------------------------------
+5. Run the full TaskTracker stack with Docker Compose
+--------------------------------------------------------------------
 
+    python train_model.py
+    python check_quality_gate.py
+    docker compose up --build -d
+    docker compose ps
+    docker compose logs -f app
 
-------------------------------------------------------
-STEP 5 — Add the required secrets
-------------------------------------------------------
+Verify the application:
 
-    gh secret set DOCKERHUB_USERNAME --body "<your-dockerhub-username>"
-    gh secret set DOCKERHUB_TOKEN --body "<the-access-token-from-step-1>"
-    gh secret list
+    curl http://localhost:8000/health
+    curl http://localhost:8000/version
 
+Stop the stack and retain the PostgreSQL volume:
 
-------------------------------------------------------
-STEP 6 — Create the "production" Environment with required reviewers
-------------------------------------------------------
-This step has to be done in the browser - it's what makes the final
-promotion step pause for manual approval.
+    docker compose down
 
-    1. Open: https://github.com/<your-username>/churn-prediction-advanced/settings/environments
-    2. Click "New environment", name it exactly:  production
-    3. Check "Required reviewers" and add yourself (or your team)
-    4. Save protection rules
+Stop the stack and delete the PostgreSQL volume:
 
+    docker compose down -v
 
-------------------------------------------------------
-STEP 7 — (Optional) Protect the main branch
-------------------------------------------------------
-Browser: repo -> Settings -> Branches -> Add rule
-  - Branch name pattern: main
-  - Require status checks to pass before merging
-      -> select: lint, dependency-scan, train-and-evaluate, test
+--------------------------------------------------------------------
+6. Build and run the TaskTracker Docker image directly
+--------------------------------------------------------------------
 
+    python train_model.py
+    python check_quality_gate.py
+    docker build -t tasktracker:latest .
+    docker run --rm -p 8000:8000 tasktracker:latest
 
-------------------------------------------------------
-STEP 8 — Watch the first pipeline run
-------------------------------------------------------
-Your push in Step 4 already triggered ci.yml. Watch it:
+The Dockerfile expects model.pkl, metrics.json, and VERSION in the build
+context. CI creates the model artifact before the CD workflow builds the image.
 
-    gh run watch
+--------------------------------------------------------------------
+7. Deploy TaskTracker to Kubernetes
+--------------------------------------------------------------------
 
-Once CI finishes successfully, cd.yml starts automatically:
+Check the selected cluster:
 
-    gh run list --workflow=cd.yml
+    kubectl config current-context
+    kubectl cluster-info
+    kubectl get nodes
 
+For Docker Desktop Kubernetes, build the local image first:
 
-------------------------------------------------------
-STEP 9 — Approve the production promotion
-------------------------------------------------------
-The "promote-to-production" job will sit and wait for approval.
+    python train_model.py
+    python check_quality_gate.py
+    docker build -t tasktracker:latest .
 
-    Browser -> repo -> Actions -> (the running CD Pipeline run)
-             -> "Review deployments" -> select "production" -> Approve
+Apply database resources, then application resources:
 
-Or via CLI once you know the run id (from `gh run list`):
+    kubectl apply -f k8s/db-secret.yaml
+    kubectl apply -f k8s/db-configmap.yaml
+    kubectl apply -f k8s/db-service.yaml
+    kubectl apply -f k8s/db-statefulset.yaml
+    kubectl apply -f k8s/app-secret.yaml
+    kubectl apply -f k8s/app-configmap.yaml
+    kubectl apply -f k8s/app-service.yaml
+    kubectl apply -f k8s/app-deployment.yaml
 
-    gh run view <run-id>
+Verify the deployment:
 
+    kubectl get pods -w
+    kubectl get statefulset postgres-db
+    kubectl get deployment tasktracker-app
+    kubectl get pvc
+    kubectl rollout status statefulset/postgres-db
+    kubectl rollout status deployment/tasktracker-app
+    kubectl get services
+    kubectl get endpoints db-service tasktracker-app-service
+    kubectl logs deployment/tasktracker-app
 
-------------------------------------------------------
-STEP 10 — Verify the images
-------------------------------------------------------
+Local API verification through the Kubernetes Service:
 
-    docker pull <username>/churn-prediction:latest
-    docker pull <username>/churn-prediction:v1.0.<run_number>
-    docker run --rm -p 8000:8000 <username>/churn-prediction:latest
+    kubectl port-forward service/tasktracker-app-service 8000:80
     curl http://localhost:8000/health
 
+Optional Ingress deployment (requires an NGINX Ingress Controller and DNS or
+hosts-file resolution for tasktracker.internal.example.com):
 
-------------------------------------------------------
-DAY-TO-DAY USE (this is all you ever type going forward)
-------------------------------------------------------
+    kubectl apply -f k8s/ingress.yaml
+    kubectl get ingress tasktracker-ingress
 
+--------------------------------------------------------------------
+8. GitHub Actions CI/CD
+--------------------------------------------------------------------
+
+CI runs on pushes to main and pull requests. It performs:
+
+- Ruff linting
+- pip-audit dependency scanning
+- Model training and the F1/ROC-AUC quality gate
+- pytest tests using the trained model artifact
+
+The CD workflow runs after a successful CI run on main. It builds the
+tasktracker image, scans it with Trivy, pushes versioned/candidate tags to
+Docker Hub, and requires manual approval before promoting latest.
+
+Optional GitHub CLI setup:
+
+    gh auth login
+    gh repo create tasktracker --public --source=. --remote=origin --push
+    gh secret set DOCKERHUB_USERNAME --body "<your-dockerhub-username>"
+    gh secret set DOCKERHUB_TOKEN --body "<your-dockerhub-access-token>"
+    gh secret list
     git add .
-    git commit -m "fix: correct contract_type validation range"
+    git commit -m "chore: initial TaskTracker submission"
     git push origin main
 
-Then just approve the production promotion in the GitHub UI when it's
-ready. Everything else - training, the quality gate, tests, linting,
-dependency scanning, building, image scanning, and tagging - happens
-automatically on GitHub's servers.
+Watch workflows:
+
+    gh run list --workflow=ci.yml
+    gh run watch
+    gh run list --workflow=cd.yml
+
+Create a GitHub Environment named production and configure required reviewers
+before using the production-promotion job.
+
+--------------------------------------------------------------------
+9. Push and run a registry image
+--------------------------------------------------------------------
+
+Replace the registry and username placeholders with real values:
+
+    docker tag tasktracker:latest <username>/tasktracker:latest
+    docker push <username>/tasktracker:latest
+    docker pull <username>/tasktracker:latest
+    docker run --rm -p 8000:8000 <username>/tasktracker:latest
+    curl http://localhost:8000/health
+
+Never commit real passwords, tokens, or production secret values.
 ====================================================================

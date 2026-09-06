@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Customer Churn Prediction API")
+app = FastAPI(title="TaskTracker API")
 
 MODEL_PATH = Path("model.pkl")
 METRICS_PATH = Path("metrics.json")
